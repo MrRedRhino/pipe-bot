@@ -1,0 +1,20 @@
+1: Add a playlist save function
+
+playlist load NAME: replaces the current playlist with the loaded one                   > accessible for everyone
+playlist save:      saves the currently loaded playlist                                 > accessible for owner
+playlist save NAME: if playlist loaded: renames it, if not, saves the current playlist  > accessible for everyone
+playlist unload:    sets the playlist to be the one that you fill by using -p           > accessible for everyone
+playlist del NAME:  deletes the playlist with the given NAME                            > accessible for admin, owner
+playlist list:      lists all playlists                                                 > accessible for everyone
+
+
+2: Bug-report and suggestion system
+
+
+
+
+3: starboard introduction:
+    # Hallo @ElectroBOOMer⚡, es gibt jetzt ein #starboard - System. D.H, wenn ihr eine Nachricht oder ein Meme seht,
+    # die ihr besonders gut/witzig/wichtig/bemerkenswert findet und sie für die Nachwelt in einem extra Kanal behalten wollt,
+    # reagiert ihr einfach mit einem Stern auf diese Nachricht. Nachrichten mit ZWEI Sternen werden in den Starboard-Kanal
+    # geschrieben und sind dort schön in einem Kanal zusammengefasst.
