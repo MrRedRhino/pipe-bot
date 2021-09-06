@@ -6,7 +6,7 @@ import time
 
 import cv2
 import discord
-import requestsg
+import requests
 import youtube_dl
 from PIL import ImageEnhance, Image
 from discord.ext import commands
@@ -17,7 +17,7 @@ import translate as tl
 import deepfrier as dp
 
 activity = discord.Activity(type=discord.ActivityType.listening, name="")
-bot = commands.Bot(command_prefix='-', status=discord.Status.invisible, activity=activity, help_command=None)
+bot = commands.Bot(command_prefix='-', status=discord.Status.online, activity=activity, help_command=None)
 slash = SlashCommand(bot, sync_commands=False)
 DiscordComponents(bot)
 
@@ -72,7 +72,7 @@ def add_song(song):
 
 
 def generate_playtime(current_time, duration):
-    output = f'{str(datetime.timedelta(seconds=current_time))} '
+    output = f'{str(datetime.timedelta(seconds=int(current_time)))} '
 
     for i in range(int(current_time / duration * 10)):
         output += '┈'
@@ -162,7 +162,7 @@ async def play(ctx, *, song=None):
     if not playerMsg:
         await ctx.message.delete()
 
-    if ctx.author.voice:
+    if not ctx.author.voice:
         await ctx.send(tl.translate('command.player.user_not_connected', get_lang('data/languages.json', ctx.message.guild.id)))
         return
     try:
@@ -170,7 +170,7 @@ async def play(ctx, *, song=None):
     except Exception as e:
         print(e)
 
-    if not song and ctx.author.voice.channel.id == bot.voice_clients[0].channel.id:
+    if song and ctx.author.voice.channel.id == bot.voice_clients[0].channel.id:
         add_song(song)
         if not bot.voice_clients[0].is_playing():
             startTime = time.time()
