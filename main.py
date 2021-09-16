@@ -7,6 +7,8 @@ import time
 import sched
 import cv2
 import discord
+import mcstatus
+import base64
 import requests
 import youtube_dl
 from PIL import ImageEnhance, Image
@@ -23,26 +25,6 @@ slash = SlashCommand(bot, sync_commands=False)
 DiscordComponents(bot)
 
 playerInstances = {}
-
-# UPDATE-LIST
-# __PIPE-BOT-UPDATE__
-# **Bug-fixes:**
-#   - Playing audio when adding a song and the previous one is already done
-#
-# **Commands:**
-#   - Add Seek: Jumps to the given point in the song
-
-
-# playlist = []
-# oldPlaylist = []
-# currentPlaylist = None
-# savedPlaylists = {"pl1": {'ownerID': "123", 'contents': [{'url': "", 'name': "", 'thumbnail': ""}]}}
-# {"pl1":{'ownerID':"123",'contents:'[{'url':"",'name':"",'thumbnail':""}]}}
-
-# currentSong = 0
-# FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn -ss 60'}
-# url = ''
-# start_time = 0
 
 playerUpdater = None
 scheduler = sched.scheduler(time.time, time.sleep)
@@ -128,6 +110,7 @@ class PlayerInstance:
         self.pause_start = 0
         self.is_playing = False
         self.guild_id = 0
+        self.volume = 1
     
     async def join_vc(self, vc):
         try:
@@ -191,10 +174,15 @@ class PlayerInstance:
     def stop(self):
         self.voice_client.stop()
     
+    def set_volume(self, volume):
+        self.volume = volume
+        self.seek(self.get_time_playing())
+    
     def play(self, idx, begin=0):
         if self.start_time == 0:
             self.start_time = time.time()
-        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} '}  # -filter:a "volume=100000000" "atempo=20"
+        print(self.volume)
+        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -filter:a "volume={self.volume}"'}  # -filter:a "volume=100000000" "atempo=20"
         self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)]['url'], **ffmpeg_options), after=print('song done?'))
         scheduler.enter(self.get_current_song()['duration'] + 1, 1, self.next)
 
@@ -407,6 +395,18 @@ async def fb(ctx, duration='10'):
         await playerInstances[ctx.guild.id].fastbackward(int(output))
 
 
+@bot.command('volume')
+async def vol(ctx, volume=None):
+    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice) and volume:
+        # language = get_lang('data/languages.json', ctx.guild.id)
+        try:
+            playerInstances[ctx.guild.id].set_volume(volume=int(volume))
+        except Exception as e:
+            print(e)
+        
+        
+        
+
 # @bot.command('playlist')
 # async def playlist_command(ctx, arg1=None, arg2=None):
 #     global playlist, oldPlaylist, currentPlaylist
@@ -503,61 +503,6 @@ async def purge(ctx, action=None):
                 await ctx.channel.purge(limit=msg[0])
 
 
-# STARBOARD (disabled since it doesnt work on multiple servers)
-# noinspection PyUnreachableCode,PyBroadException
-# @bot.event
-# async def on_raw_reaction_add(payload):
-#     return payload
-#     f = open('data/starboardMsgs.txt', 'r')
-#     starboard_messages = f.readline()
-#     f.close()
-#     try:
-#         starboard_messages = json.loads(starboard_messages)
-#     except:
-#         starboard_messages = {}
-#
-#     print(starboard_messages)
-#
-#     channel = await bot.fetch_channel(payload.channel_id)
-#     message = await channel.fetch_message(payload.message_id)
-#
-#     for reaction in message.reactions:
-#         if reaction.emoji == '⭐':
-#             emoji_count = reaction.count
-#     if emoji_count < 2:
-#         return
-#
-#     starboard_channel = await bot.fetch_channel(879703712740827186)
-#
-#     if payload.emoji.name == '⭐' and payload.guild_id == 702452892241625099 and not str(
-#             payload.message_id) in starboard_messages.keys():
-#         embed = discord.Embed(colour=discord.Colour.purple())
-#         if len(message.attachments) > 0:
-#             embed.set_image(url=str(message.attachments[0]))
-#             print(message.attachments[0])
-#
-#         s_id = channel.guild.id
-#         c_id = payload.channel_id
-#         m_id = payload.message_id
-#         original_msg_url = f'https://discord.com/channels/{s_id}/{c_id}/{m_id}'
-#
-#         embed.add_field(name=message.author, value=f'[Original]({original_msg_url})')
-#         embed.add_field(name='‎‏‏‎ ‎', value=str(message.content), inline=False)  # '‎‏‏‎ ‎'
-#         # embed.add_field(name='‎‏‏‎ ‎',value='Starcounter')
-#         embed.set_footer(text='Starcounter')
-#
-#         msg = await starboard_channel.send(embed=embed)
-#
-#         starboard_messages[str(payload.message_id)] = msg.id  # {'originalMsgId':'starboardMsgID'}
-#         print(starboard_messages)
-#         f = open('data/starboardMsgs.txt', 'w')
-#         f.write(json.dumps(starboard_messages))
-#         f.close()
-#
-#     edit_msg = await starboard_channel.fetch_message(int(starboard_messages[str(payload.message_id)]))
-#     await edit_msg.edit(embed=edit_msg.embeds[0].set_footer(text=f'⭐️ {emojiCount} | {payload.message_id}'))
-
-
 @bot.command("help")
 async def help_command(ctx):
     embed = discord.Embed(title=tl.translate('command.help.title', get_lang('data/languages.json', ctx.guild.id)),
@@ -594,6 +539,12 @@ async def set_language(ctx, language=None):
         languages[str(ctx.guild.id)] = 'fr'
         json.dump(languages, open('data/languages.json', 'w'))
         
+
+@bot.command('server', aliases=['serverinfo', 'mcinfo'])
+async def server(ctx, ip, port=25565):
+    mcserver = mcstatus.MinecraftServer(ip, port)
+    # mcserver.
+
 
 @bot.command('printreply')
 async def print_msg(ctx):
