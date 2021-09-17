@@ -1,12 +1,18 @@
 import json
 from os import listdir
 
-langs = listdir('lang')
-translations = {}
-for path in listdir('lang'):
-    f = open(f'lang/{path}')
-    translations[path] = (json.load(f))
-    f.close()
+
+global translations
+
+
+def read_files():
+    global translations
+    langs = listdir('lang')
+    translations = {}
+    for path in listdir('lang'):
+        f = open(f'lang/{path}')
+        translations[path] = (json.load(f))
+        f.close()
 
 
 def translate(key, lang, param0=None, param1=None, param2=None, param3=None, param4=None):

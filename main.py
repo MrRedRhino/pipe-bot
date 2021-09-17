@@ -7,8 +7,8 @@ import time
 import sched
 import cv2
 import discord
+
 import mcstatus
-import base64
 import requests
 import youtube_dl
 from PIL import ImageEnhance, Image
@@ -18,11 +18,13 @@ from discord_slash.model import ButtonStyle
 from discord_components import *
 import translate as tl
 import deepfrier as dp
+from playlistEntry import PlaylistEntry
 
 activity = discord.Activity(type=discord.ActivityType.listening, name="")
 bot = commands.Bot(command_prefix='b-', status=discord.Status.online, activity=activity, help_command=None)
 slash = SlashCommand(bot, sync_commands=False)
 DiscordComponents(bot)
+tl.read_files()
 
 playerInstances = {}
 
@@ -40,11 +42,13 @@ jobber = threading.Thread(target=do_jobs)
 jobber.daemon = True
 jobber.start()
 
+language_file = json.load(open('data/languages.json'))
 
-def get_lang(file, key):
-    languages = json.load(open(file))
-    if str(key) in languages.keys():
-        return languages[str(key)]
+
+def get_lang(key):
+    global language_file
+    if str(key) in language_file.keys():
+        return language_file[str(key)]
     else:
         return 'en'
 
@@ -71,12 +75,14 @@ def is_in_same_talk_as_vc_client(guild_id, author_vc):
 async def find_song(song):
     with youtube_dl.YoutubeDL() as ydl:
         info = ydl.extract_info(str(f'ytsearch:{str(song)}'), download=False)['entries'][0]
+        print(ydl.extract_info(str(f'ytsearch:{str(song)}'), download=False))
         url = info['formats'][0]['url']
         name = info['title']
         thumbnail = info['thumbnail']
         duration = info['duration']
         vid = info['id']
-        return dict(url=url, name=name, thumbnail=thumbnail, duration=duration, id=vid)
+        return PlaylistEntry(url, name, thumbnail, duration, vid)
+        # return dict(url=url, name=name, thumbnail=thumbnail, duration=duration, id=vid)
 
 
 def generate_playtime(current_time, duration):
@@ -106,6 +112,7 @@ class PlayerInstance:
         self.current_song_idx = 0
         self.start_time = 0
         self.time_playing = 0
+        self.playtime_modifier = 0
         self.pause_duration = 0
         self.pause_start = 0
         self.is_playing = False
@@ -133,13 +140,14 @@ class PlayerInstance:
         self.voice_client.pause()
     
     async def resume(self):
-        self.pause_duration = time.time() - self.pause_start
+        self.playtime_modifier -= time.time() - self.pause_start
         self.voice_client.resume()
     
     def next(self):
         if self.current_song_idx < len(self.playlist)-1:
             self.current_song_idx += 1
             self.start_time = time.time()
+            self.playtime_modifier = 0
             self.stop()
             self.play(self.current_song_idx)
     
@@ -147,32 +155,38 @@ class PlayerInstance:
         if self.current_song_idx > 0:
             self.current_song_idx -= 1
             self.start_time = time.time()
+            self.playtime_modifier = 0
             self.stop()
             self.play(self.current_song_idx)
     
     async def fastforward(self, duration):
+        time_playing = self.get_time_playing()
         if self.get_time_playing() + duration > self.get_current_song()['duration']:
             self.next()
         else:
             self.stop()
-            self.play(self.current_song_idx, begin=time.time() - self.start_time - self.pause_duration + duration)
-            self.start_time += duration
+            self.play(self.current_song_idx, begin=time_playing + duration)
+            self.playtime_modifier -= duration
     
     async def fastbackward(self, duration):
+        time_playing = self.get_time_playing()
         self.stop()
         if self.get_time_playing() - duration < 0:
-            self.play(self.current_song_idx, begin=time.time() - self.start_time - self.pause_duration - duration)
+            self.play(self.current_song_idx, begin=time_playing - duration)
             self.start_time = time.time()
+            self.playtime_modifier = 0
         else:
-            self.play(self.current_song_idx, begin=time.time() - self.start_time - self.pause_duration - duration)
-            self.start_time -= duration
+            self.play(self.current_song_idx, begin=time_playing - duration)
+            self.playtime_modifier += duration
         
     def seek(self, time_in_song):
         self.stop()
+        self.playtime_modifier = time_in_song
         self.play(self.current_song_idx, time_in_song)
     
     def stop(self):
         self.voice_client.stop()
+        self.playtime_modifier = 0
     
     def set_volume(self, volume):
         self.volume = volume
@@ -181,10 +195,9 @@ class PlayerInstance:
     def play(self, idx, begin=0):
         if self.start_time == 0:
             self.start_time = time.time()
-        print(self.volume)
         ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -filter:a "volume={self.volume}"'}  # -filter:a "volume=100000000" "atempo=20"
-        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)]['url'], **ffmpeg_options), after=print('song done?'))
-        scheduler.enter(self.get_current_song()['duration'] + 1, 1, self.next)
+        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options))
+        scheduler.enter(self.get_current_song()['duration'] - self.get_time_playing() + 1, 1, self.next)
 
     def get_time_playing(self):
         if self.voice_client.is_paused():
@@ -192,14 +205,14 @@ class PlayerInstance:
         if not self.voice_client.is_playing():
             return 0
         if self.voice_client.is_playing():
-            return time.time() - self.start_time - self.pause_duration
+            return time.time() - self.start_time + self.playtime_modifier
         
     def get_current_song(self):
         return self.playlist[self.current_song_idx]
 
     async def gen_embed(self):
         current_song = self.playlist[self.current_song_idx]
-        language = get_lang('data/languages.json', self.guild_id)
+        language = get_lang(self.guild_id)
         embed = discord.Embed(title="PLAYER", colour=discord.Colour.blue())
     
         if not self.is_playing:
@@ -233,7 +246,7 @@ async def send_or_update_player(send_new, message_or_channel):  # player_msg, ti
 
 
 def generate_player_embed(guild_id, current_song, is_playing, time_playing):  # playing, language, time_playing=0, duration=0, current_song=None
-    language = get_lang('data/languages.json', guild_id)
+    language = get_lang(guild_id)
     embed = discord.Embed(title="PLAYER", colour=discord.Colour.blue())
 
     if not is_playing:
@@ -273,7 +286,7 @@ async def on_component(ctx):
 @bot.command('play', aliases=['p', 'paly', 'pasl'])
 async def play(ctx, *, song=None):
     global playerInstances
-    language = get_lang('data/languages.json', ctx.guild.id)
+    language = get_lang(ctx.guild.id)
 
     if not ctx.author.voice:
         await ctx.send(tl.translate('command.player.user_not_connected', language))
@@ -306,7 +319,7 @@ async def play(ctx, *, song=None):
 @bot.command("leave", aliases=['stop', 'leav', 'laeve'])
 async def leave(ctx):
     global playerInstances
-    language = get_lang('data/languages.json', ctx.guild.id)
+    language = get_lang(ctx.guild.id)
     
     if ctx.guild.id in playerInstances.keys():
         await playerInstances[ctx.guild.id].leave_vc()
@@ -348,7 +361,7 @@ async def clear(ctx):
 @bot.command('seek', aliases=[])
 async def seek(ctx, position):
     if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
-        language = get_lang('data/languages.json', ctx.guild.id)
+        language = get_lang(ctx.guild.id)
         output = ''
         colon_count = 0
         for i in position:
@@ -374,7 +387,7 @@ async def seek(ctx, position):
 @bot.command('fastforward', aliases=['ff'])
 async def ff(ctx, duration='10'):
     if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
-        language = get_lang('data/languages.json', ctx.guild.id)
+        language = get_lang(ctx.guild.id)
         output = ''
         for i in duration:
             if i in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']:
@@ -386,7 +399,7 @@ async def ff(ctx, duration='10'):
 @bot.command('fastbackward', aliases=['fb'])
 async def fb(ctx, duration='10'):
     if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
-        language = get_lang('data/languages.json', ctx.guild.id)
+        language = get_lang(ctx.guild.id)
         output = ''
         for i in duration:
             if i in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']:
@@ -405,8 +418,8 @@ async def vol(ctx, volume=None):
             print(e)
         
         
-        
-
+#
+#
 # @bot.command('playlist')
 # async def playlist_command(ctx, arg1=None, arg2=None):
 #     global playlist, oldPlaylist, currentPlaylist
@@ -464,15 +477,16 @@ async def vol(ctx, volume=None):
 # noinspection PyBroadException
 @bot.command("purge", aliases=[])
 async def purge(ctx, action=None):
+    language = get_lang(ctx.guild.id)
     if not check_authorization(ctx):
-        await ctx.send(tl.translate('command.purge.no_perm', get_lang('data/languages.json', ctx.guild.id)), delete_after=10)
+        await ctx.send(tl.translate('command.purge.no_perm', language), delete_after=10)
         await ctx.message.delete()
         return
 
     if not action and not ctx.message.reference:
-        embed = discord.Embed(title=tl.translate('command.purge.help.title', get_lang('data/languages.json', ctx.guild.id)), colour=discord.Colour.blue())
-        embed.add_field(name=tl.translate('command.purge.help.options', get_lang('data/languages.json', ctx.guild.id)),
-                        value=tl.translate('command.purge.help.content', get_lang('data/languages.json', ctx.guild.id)), inline=False)
+        embed = discord.Embed(title=tl.translate('command.purge.help.title', language), colour=discord.Colour.blue())
+        embed.add_field(name=tl.translate('command.purge.help.options', language),
+                        value=tl.translate('command.purge.help.content', language), inline=False)
 
         await ctx.send(embed=embed)
         await ctx.message.delete()
@@ -488,7 +502,7 @@ async def purge(ctx, action=None):
             msg = [msgCount for msgCount in range(len(history)) if history[msgCount].id == action]
 
             if len(msg) == 0:
-                await ctx.send(tl.translate('command.purge.no_msg_with_id', get_lang('data/languages.json', ctx.guild.id)), delete_after=10)
+                await ctx.send(tl.translate('command.purge.no_msg_with_id', language), delete_after=10)
             else:
                 await ctx.channel.purge(limit=msg[0])
 
@@ -498,17 +512,18 @@ async def purge(ctx, action=None):
             msg = [msgCount for msgCount in range(len(history)) if
                    history[msgCount].id == ctx.message.reference.message_id]
             if len(msg) == 0:
-                await ctx.send(tl.translate('command.purge.reply_too_old', get_lang('data/languages.json', ctx.guild.id)), delete_after=10)
+                await ctx.send(tl.translate('command.purge.reply_too_old', language), delete_after=10)
             else:
                 await ctx.channel.purge(limit=msg[0])
 
 
 @bot.command("help")
 async def help_command(ctx):
-    embed = discord.Embed(title=tl.translate('command.help.title', get_lang('data/languages.json', ctx.guild.id)),
-                          description=tl.translate('command.help.desc', get_lang('data/languages.json', ctx.guild.id)), colour=discord.Colour.blue())
-    embed.add_field(name=tl.translate('command.help.field1.title', get_lang('data/languages.json', ctx.guild.id)),
-                    value=tl.translate('command.help.field1.desc', get_lang('data/languages.json', ctx.guild.id)), inline=True)
+    language = get_lang(ctx.guil.did)
+    embed = discord.Embed(title=tl.translate('command.help.title', language),
+                          description=tl.translate('command.help.desc', language), colour=discord.Colour.blue())
+    embed.add_field(name=tl.translate('command.help.field1.title', language),
+                    value=tl.translate('command.help.field1.desc', language), inline=True)
     await ctx.send(embed=embed)
 
 
@@ -516,10 +531,10 @@ async def help_command(ctx):
 async def set_language(ctx, language=None):
     await ctx.message.delete()
     if not language or language not in ['en', 'de', 'fr']:
-        await ctx.send(f'Available languages are: `"en","de","fr"`\nThe current one is `{get_lang("data/languages.json",str(ctx.guild.id))}`')
+        await ctx.send(f'Available languages are: `"en","de","fr"`\nThe current one is `{get_lang(ctx.guild.id)}`')
         return
     
-    if get_lang("data/languages.json", str(ctx.guild.id)) == language:
+    if get_lang(ctx.guild.id) == language:
         await ctx.send(f'Nothing changed, language was `{language}` before')
     else:
         await ctx.send(f'Language is now `{language}`')
@@ -542,24 +557,34 @@ async def set_language(ctx, language=None):
 
 @bot.command('server', aliases=['serverinfo', 'mcinfo'])
 async def server(ctx, ip, port=25565):
-    mcserver = mcstatus.MinecraftServer(ip, port)
-    # mcserver.
+    try:
+        mcserver = mcstatus.MinecraftServer(ip, int(port))
+    
+        embed = discord.Embed(title=ip)
+        embed.add_field(name='Version:', value=f'{mcserver.status().version.name}')
+        
+        embed.add_field(name='Players', value=f'{mcserver.status().players.online} / {mcserver.status().players.max}')
+        embed.colour = discord.Colour.blurple()
+    except Exception as e:
+        embed = discord.Embed(title='Error')
+        embed.add_field(name='Could not connect to the given server!', value=f'It\'s either offline or the given ip/port is wrong\n\n`{str(e)}`')
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(embed=embed)
 
 
 @bot.command('printreply')
 async def print_msg(ctx):
     channel = await bot.fetch_channel(ctx.message.reference.channel_id)
     msg = await channel.fetch_message(ctx.message.reference.message_id)
-    await ctx.send(msg)
-    await ctx.send(str(msg.content))
-    print(str(msg.content))
-    await ctx.send(msg.attachments)
+    await ctx.send(f'```{msg.content}```')
 
 
 # noinspection PyBroadException
 @bot.command('deepfry')
 async def deepfry(ctx, amount=6, iterations=1, noise_intensity=0.05):
-    await ctx.send(tl.translate('command.deepfry.answer', get_lang('data/languages.json', ctx.guild.id)))
+    language = get_lang(ctx.guild.id)
+    await ctx.send(tl.translate('command.deepfry.answer', language))
     msg = await ctx.send('...')
     try:
         img_url = ctx.message.attachments[0].url
@@ -580,18 +605,18 @@ async def deepfry(ctx, amount=6, iterations=1, noise_intensity=0.05):
 
             if i % 10 == 0 and iterations > 50:
                 try:
-                    await msg.edit(content=tl.translate('command.deepfry.progress', get_lang('data/languages.json', ctx.guild.id), i))
+                    await msg.edit(content=tl.translate('command.deepfry.progress', language, i))
                 except:
                     pass
 
             if time.time() - start > 45:
-                await ctx.send(tl.translate('command.deepfry.too_long', get_lang('data/languages.json', ctx.guild.id), i), delete_after=10)
+                await ctx.send(tl.translate('command.deepfry.too_long', language, i), delete_after=10)
                 break
 
         await msg.delete()
         img.save('file.png')
         if iterations > 50:
-            await ctx.send(tl.translate('command.deepfry.done', get_lang('data/languages.json', ctx.guild.id), ctx.author.id),
+            await ctx.send(tl.translate('command.deepfry.done', language, ctx.author.id),
                            file=discord.File(open('file.png', 'rb')))
         else:
             await ctx.send(file=discord.File(open('file.png', 'rb')))
@@ -602,8 +627,9 @@ async def deepfry(ctx, amount=6, iterations=1, noise_intensity=0.05):
 
 @bot.listen('on_message (deactivated)')
 async def on_msg(msg):
+    language = get_lang(msg.guild.id)
     if ('pipe-bot' in msg.content or 'pipebot' in msg.content or '<@!864198668533497877>' in msg.content or '<@&864224161290125323>' in msg.content) and 'offline' in msg.content:
-        await msg.channel.send(tl.translate('only_ghosting', get_lang('data/languages.json', msg.channel.guild.id)))
+        await msg.channel.send(tl.translate('only_ghosting', language))
         await msg.channel.send('https://cdn.discordapp.com/emojis/855160244023459850.gif?v=1')
 
 
