@@ -2,12 +2,10 @@ from __future__ import unicode_literals
 
 import datetime
 import json
-import threading
+import random
 import time
-import sched
 import cv2
 import discord
-
 import mcstatus
 import requests
 import youtube_dl
@@ -29,19 +27,6 @@ tl.read_files()
 playerInstances = {}
 
 playerUpdater = None
-scheduler = sched.scheduler(time.time, time.sleep)
-
-
-def do_jobs():
-    while True:
-        scheduler.run()
-        time.sleep(1)
-
-
-jobber = threading.Thread(target=do_jobs)
-jobber.daemon = True
-jobber.start()
-
 language_file = json.load(open('data/languages.json'))
 
 
@@ -75,7 +60,6 @@ def is_in_same_talk_as_vc_client(guild_id, author_vc):
 async def find_song(song):
     with youtube_dl.YoutubeDL() as ydl:
         info = ydl.extract_info(str(f'ytsearch:{str(song)}'), download=False)['entries'][0]
-        print(ydl.extract_info(str(f'ytsearch:{str(song)}'), download=False))
         url = info['formats'][0]['url']
         name = info['title']
         thumbnail = info['thumbnail']
@@ -118,6 +102,8 @@ class PlayerInstance:
         self.is_playing = False
         self.guild_id = 0
         self.volume = 1
+        self.loop_mode = 'off'
+        self.song_over_scheduler_entry = None
     
     async def join_vc(self, vc):
         try:
@@ -193,11 +179,11 @@ class PlayerInstance:
         self.seek(self.get_time_playing())
     
     def play(self, idx, begin=0):
-        if self.start_time == 0:
+        if begin == 0:
             self.start_time = time.time()
-        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -filter:a "volume={self.volume}"'}  # -filter:a "volume=100000000" "atempo=20"
-        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options))
-        scheduler.enter(self.get_current_song()['duration'] - self.get_time_playing() + 1, 1, self.next)
+            self.playtime_modifier = 0
+        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -filter:a "volume={self.volume}"'}  # -filter:a "atempo=20"
+        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options), after=lambda e: self.song_end())
 
     def get_time_playing(self):
         if self.voice_client.is_paused():
@@ -209,7 +195,25 @@ class PlayerInstance:
         
     def get_current_song(self):
         return self.playlist[self.current_song_idx]
+    
+    def set_loop_mode(self, mode):  # playlist, song, off
+        self.loop_mode = mode
+        print(self.loop_mode)
 
+    def song_end(self):
+        if self.loop_mode == 'playlist':
+            print(len(self.playlist), self.current_song_idx + 1)
+            if self.current_song_idx + 1 >= len(self.playlist):
+                self.current_song_idx = 0
+                self.stop()
+                self.play(self.current_song_idx)
+            else:
+                self.next()
+        elif self.loop_mode == 'song':
+            self.play(self.current_song_idx)
+        elif self.loop_mode == 'off':
+            self.next()
+        
     async def gen_embed(self):
         current_song = self.playlist[self.current_song_idx]
         language = get_lang(self.guild_id)
@@ -294,6 +298,8 @@ async def play(ctx, *, song=None):
     # add song if user can control player and it is connected
     if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice) and song:
         player_inst = playerInstances[ctx.guild.id]
+        if random.random() > 0.98:
+            player_inst.playlist.append(await find_song('rick astley never gonna give you up'))
         player_inst.playlist.append(await find_song(song))
 
         if not player_inst.voice_client.is_playing():
@@ -306,6 +312,8 @@ async def play(ctx, *, song=None):
         new_player = PlayerInstance()
         playerInstances[ctx.guild.id] = new_player
         
+        if random.random() > 0.98:
+            new_player.playlist.append(await find_song('rick astley never gonna give you up'))
         new_player.playlist.append(await find_song(song))
     
         await new_player.join_vc(ctx.author.voice.channel)
@@ -416,8 +424,37 @@ async def vol(ctx, volume=None):
             playerInstances[ctx.guild.id].set_volume(volume=int(volume))
         except Exception as e:
             print(e)
-        
-        
+
+
+@bot.command('loop', aliases=[])  # 'off', 'song', 'playlist', 'pl'
+async def loop(ctx, mode=None):
+    language = get_lang(ctx.guild.id)
+    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
+        player_inst = playerInstances[ctx.guild.id]
+    else:
+        await ctx.send(tl.translate('command.loop.not_connected', language))
+        return
+
+    if not mode:
+        await ctx.send(tl.translate('command.loop.no_mode', language))
+        return
+    
+    if mode in ['off']:
+        player_inst.set_loop_mode('off')
+    elif mode in ['song', 's']:
+        player_inst.set_loop_mode('song')
+    elif mode in ['playlist', 'pl']:
+        player_inst.set_loop_mode('playlist')
+    else:
+        await ctx.send(tl.translate('command.loop.mode_wrong', language))
+    
+
+@bot.command('shuffle', aliases=[])
+async def shuffle(ctx):
+    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
+        playlist = playerInstances[ctx.guild.id].playlist
+        random.shuffle(playlist)
+        playerInstances[ctx.guild.id].playlist = playlist
 #
 #
 # @bot.command('playlist')
@@ -556,11 +593,15 @@ async def set_language(ctx, language=None):
         
 
 @bot.command('server', aliases=['serverinfo', 'mcinfo'])
-async def server(ctx, ip, port=25565):
+async def server(ctx, ip):
     try:
-        mcserver = mcstatus.MinecraftServer(ip, int(port))
-    
-        embed = discord.Embed(title=ip)
+        mcserver = mcstatus.MinecraftServer.lookup(ip)
+        print(mcserver.status().raw)
+        if ':' in ip:
+            embed = discord.Embed(title=ip[:ip.find(':')])
+        else:
+            embed = discord.Embed(title=ip)
+            
         embed.add_field(name='Version:', value=f'{mcserver.status().version.name}')
         
         embed.add_field(name='Players', value=f'{mcserver.status().players.online} / {mcserver.status().players.max}')
