@@ -20,6 +20,8 @@ from playlistEntry import PlaylistEntry
 
 activity = discord.Activity(type=discord.ActivityType.listening, name="")
 bot = commands.Bot(command_prefix='b-', status=discord.Status.online, activity=activity, help_command=None)
+intents = discord.Intents.default()
+intents.voice_states = True
 slash = SlashCommand(bot, sync_commands=False)
 DiscordComponents(bot)
 tl.read_files()
@@ -100,7 +102,6 @@ class PlayerInstance:
         self.pause_duration = 0
         self.pause_start = 0
         self.is_playing = False
-        self.guild_id = 0
         self.volume = 1
         self.loop_mode = 'off'
         self.song_over_scheduler_entry = None
@@ -119,6 +120,7 @@ class PlayerInstance:
                 await self.player_msg.delete()
         except Exception as e:
             print(e)
+        playerInstances.pop(self.voice_client.guild.id)
         del self
     
     async def pause(self):
@@ -216,7 +218,7 @@ class PlayerInstance:
         
     async def gen_embed(self):
         current_song = self.playlist[self.current_song_idx]
-        language = get_lang(self.guild_id)
+        language = get_lang(self.voice_client.guild.id)
         embed = discord.Embed(title="PLAYER", colour=discord.Colour.blue())
     
         if not self.is_playing:
@@ -289,40 +291,35 @@ async def on_component(ctx):
 
 @bot.command('play', aliases=['p', 'paly', 'pasl'])
 async def play(ctx, *, song=None):
-    global playerInstances
     language = get_lang(ctx.guild.id)
-
     if not ctx.author.voice:
         await ctx.send(tl.translate('command.player.user_not_connected', language))
         return
-    # add song if user can control player and it is connected
-    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice) and song:
-        player_inst = playerInstances[ctx.guild.id]
-        if random.random() > 0.98:
-            player_inst.playlist.append(await find_song('rick astley never gonna give you up'))
-        player_inst.playlist.append(await find_song(song))
 
-        if not player_inst.voice_client.is_playing():
-            player_inst.play(player_inst.current_song_idx + 1)
-            player_inst.current_song_idx += 1
-        return
-    
-    # there's no player in the user's vc and nothing else can be wrong
     if song:
-        new_player = PlayerInstance()
-        playerInstances[ctx.guild.id] = new_player
-        
         if random.random() > 0.98:
-            new_player.playlist.append(await find_song('rick astley never gonna give you up'))
-        new_player.playlist.append(await find_song(song))
-    
-        await new_player.join_vc(ctx.author.voice.channel)
-        new_player.guild_id = ctx.guild.id
-        new_player.play(0)
+            search_result = await find_song('rick astley never gonna give you up')
+        else:
+            search_result = await find_song(song)
+        await ctx.send(f'Added `{song}` to the playlist')
     else:
         await ctx.send(tl.translate('command.player.no_song_specified', language))
-    # have to update player
-
+        return
+        
+    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
+        player_inst = playerInstances[ctx.guild.id]
+        player_inst.playlist.append(search_result)
+        if not player_inst.voice_client.is_playing():
+            player_inst.next()
+            print('something')
+    else:
+        new_player = PlayerInstance()
+        playerInstances[ctx.guild.id] = new_player
+        await new_player.join_vc(ctx.author.voice.channel)
+        new_player.playlist.append(search_result)
+        new_player.play(0)
+        print('else')
+        
 
 @bot.command("leave", aliases=['stop', 'leav', 'laeve'])
 async def leave(ctx):
@@ -345,7 +342,7 @@ async def next(ctx):
 @bot.command('back', aliases=['prev', 'previous'])
 async def back(ctx):
     if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
-        playerInstances[ctx.guild.id].back()
+        await playerInstances[ctx.guild.id].back()
 
 
 @bot.command('pause')
@@ -455,12 +452,11 @@ async def shuffle(ctx):
         playlist = playerInstances[ctx.guild.id].playlist
         random.shuffle(playlist)
         playerInstances[ctx.guild.id].playlist = playlist
-#
-#
+
+
 # @bot.command('playlist')
 # async def playlist_command(ctx, arg1=None, arg2=None):
-#     global playlist, oldPlaylist, currentPlaylist
-#
+#     language = get_lang(ctx.guild.id)
 #     if arg1 in ['load', 'l']:
 #         if not arg2:
 #             await ctx.send(tl.translate('command.playlist.load.no_playlist_specified', get_lang('data/languages.json', ctx.guild.id)))
@@ -678,6 +674,17 @@ async def on_msg(msg):
 async def on_ready():
     print('(re)connected')
 
+
+@bot.event
+async def on_voice_state_update(member, before, after):  # bot was disconnected, everyone in the bots channel has disconnected
+    if member == bot.user and not after.channel and member.guild.id in playerInstances.keys():
+        await playerInstances[member.guild.id].leave_vc()
+    
+    if before.channel and not after.channel:
+        pi_chanels = [playerInstances[pi].voice_client.channel for pi in playerInstances.keys()]
+        if before.channel in pi_chanels:
+            await playerInstances[member.guild.id].leave_vc()
+    
 
 print('Startup done. Connecting to discord...')
 bot.run(open('data/token.txt').readline())

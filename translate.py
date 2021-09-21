@@ -7,7 +7,6 @@ global translations
 
 def read_files():
     global translations
-    langs = listdir('lang')
     translations = {}
     for path in listdir('lang'):
         f = open(f'lang/{path}')
