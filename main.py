@@ -1,7 +1,8 @@
 from __future__ import unicode_literals
-
+import asyncio
 import datetime
 import json
+import os
 import random
 import time
 import cv2
@@ -17,19 +18,27 @@ from discord_components import *
 import translate as tl
 import deepfrier as dp
 from playlistEntry import PlaylistEntry
+from playlistEntry import DirectStream
+print('Libraries loaded...')
 
-activity = discord.Activity(type=discord.ActivityType.listening, name="")
-bot = commands.Bot(command_prefix='b-', status=discord.Status.online, activity=activity, help_command=None)
-intents = discord.Intents.default()
-intents.voice_states = True
-slash = SlashCommand(bot, sync_commands=False)
+activity = discord.Activity(type=discord.ActivityType.listening, name="POWERWOLF")
+bot = commands.Bot(command_prefix='b-', status=discord.Status.online, activity=activity, help_command=None, intents=discord.Intents.all())
+online = True
+slash = SlashCommand(bot, sync_commands=True)
 DiscordComponents(bot)
 tl.read_files()
 
-playerInstances = {}
+guild_ids = [702452892241625099]  # , 821495407619997746
 
+playerInstances = {}
 playerUpdater = None
 language_file = json.load(open('data/languages.json'))
+song_end_loop = asyncio.new_event_loop()
+
+
+def handle_exception_without_doing_anything_because_of_the_annoying_broad_exception_error(e):
+    if e:
+        pass
 
 
 def get_lang(key):
@@ -55,20 +64,57 @@ def is_in_same_talk_as_vc_client(guild_id, author_vc):
     return False
 
 
-# def is_pl_owner(user, pl):
-#     return savedPlaylists[pl]['ownerID'] == user.id
-
+def search_yt(song):
+    with youtube_dl.YoutubeDL() as ydl:
+        entries = ydl.extract_info(str(f'ytsearch:{str(song)}'), download=False)['entries']
+        if len(entries) == 0:
+            return None
+        else:
+            info = entries[0]
+            url = info['formats'][0]['url']
+            name = info['title']
+            thumbnail = info['thumbnail']
+            duration = info['duration']
+            vid = info['id']
+            return PlaylistEntry(url, name, thumbnail, duration, vid)
+    
 
 async def find_song(song):
-    with youtube_dl.YoutubeDL() as ydl:
-        info = ydl.extract_info(str(f'ytsearch:{str(song)}'), download=False)['entries'][0]
-        url = info['formats'][0]['url']
-        name = info['title']
-        thumbnail = info['thumbnail']
-        duration = info['duration']
-        vid = info['id']
-        return PlaylistEntry(url, name, thumbnail, duration, vid)
-        # return dict(url=url, name=name, thumbnail=thumbnail, duration=duration, id=vid)
+    if song.startswith('https://'):
+        if song.startswith('https://youtu.be/'):
+            return search_yt(song)
+        elif song.startswith('https://www.youtube.com/watch?v='):  # https://www.youtube.com/watch?v=E787YU3EtNA
+            song = f'https://youtu.be/{song[32:43]}'
+            return search_yt(song)
+        else:
+            return DirectStream(song)
+    else:
+        if song.startswith('http://'):
+            return DirectStream(song)
+        else:
+            return search_yt(song)
+    #
+    # if song.startswith('https://youtube.com') or not song.startswith('https://', 0, 7):
+    #     print('youtube searching intensifies perhaps?')
+    #     # try:
+    #     with youtube_dl.YoutubeDL() as ydl:
+    #         entries = ydl.extract_info(str(f'ytsearch:{str(song)}'), download=False)['entries']
+    #         if len(entries) == 0:
+    #             return DirectStream(song)
+    #         else:
+    #             info = entries[0]
+    #
+    #         url = info['formats'][0]['url']
+    #         name = info['title']
+    #         thumbnail = info['thumbnail']
+    #         duration = info['duration']
+    #         vid = info['id']
+    #         return PlaylistEntry(url, name, thumbnail, duration, vid)
+        # except:
+        #     return None
+    #
+    # elif song.startswith('https://'):
+    #     return DirectStream(song)
 
 
 def generate_playtime(current_time, duration):
@@ -86,8 +132,21 @@ def generate_playtime(current_time, duration):
 # MUSIK
 
 @bot.command('player')
-async def player(ctx):
-    ctx += 1
+async def player_command(ctx):
+    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
+        player_inst = playerInstances[ctx.guild.id]
+        embed = player_inst.gen_embed()
+        if player_inst.player_msg:
+            await player_inst.player_msg.delete()
+            print('deleted the msg')
+
+        player_inst.player_msg = await ctx.send(
+            components=[[Button(style=ButtonStyle.grey, label='<<', custom_id='back'),
+                         Button(style=ButtonStyle.grey, label='||', custom_id='startstop'),
+                         Button(style=ButtonStyle.grey, label='>>', custom_id='skip')]],
+            embed=embed)
+    else:
+        await ctx.send(tl.translate('command.player.not_connected', get_lang(ctx.guild.id)))
 
 
 class PlayerInstance:
@@ -97,21 +156,19 @@ class PlayerInstance:
         self.playlist = []
         self.current_song_idx = 0
         self.start_time = 0
-        self.time_playing = 0
         self.playtime_modifier = 0
-        self.pause_duration = 0
         self.pause_start = 0
         self.is_playing = False
         self.volume = 1
         self.loop_mode = 'off'
-        self.song_over_scheduler_entry = None
-    
+        self.equalizer = [0, 0, 0, 0, 0]
+
     async def join_vc(self, vc):
         try:
             if not self.voice_client:
                 self.voice_client = await vc.connect()
         except Exception as e:
-            print(e)
+            handle_exception_without_doing_anything_because_of_the_annoying_broad_exception_error(e)
     
     async def leave_vc(self):
         try:
@@ -119,42 +176,47 @@ class PlayerInstance:
             if self.player_msg:
                 await self.player_msg.delete()
         except Exception as e:
-            print(e)
-        playerInstances.pop(self.voice_client.guild.id)
+            handle_exception_without_doing_anything_because_of_the_annoying_broad_exception_error(e)
+        if self.voice_client.guild.id in playerInstances:
+            playerInstances.pop(self.voice_client.guild.id)
         del self
     
     async def pause(self):
         self.pause_start = time.time()
         self.voice_client.pause()
+        await self.update_player_message()
     
-    async def resume(self):
+    def resume(self):
         self.playtime_modifier -= time.time() - self.pause_start
         self.voice_client.resume()
     
-    def next(self):
-        if self.current_song_idx < len(self.playlist)-1:
+    async def next(self):
+        if self.current_song_idx < len(self.playlist) - 1:
             self.current_song_idx += 1
-            self.start_time = time.time()
-            self.playtime_modifier = 0
             self.stop()
             self.play(self.current_song_idx)
+        await self.update_player_message()
     
     async def back(self):
         if self.current_song_idx > 0:
             self.current_song_idx -= 1
-            self.start_time = time.time()
-            self.playtime_modifier = 0
             self.stop()
             self.play(self.current_song_idx)
+        else:
+            self.current_song_idx = 0
+            self.stop()
+            self.play(self.current_song_idx)
+        await self.update_player_message()
     
     async def fastforward(self, duration):
         time_playing = self.get_time_playing()
-        if self.get_time_playing() + duration > self.get_current_song()['duration']:
-            self.next()
+        if self.get_time_playing() + duration > self.get_current_song().duration:
+            await self.next()
         else:
             self.stop()
             self.play(self.current_song_idx, begin=time_playing + duration)
             self.playtime_modifier -= duration
+        await self.update_player_message()
     
     async def fastbackward(self, duration):
         time_playing = self.get_time_playing()
@@ -166,26 +228,29 @@ class PlayerInstance:
         else:
             self.play(self.current_song_idx, begin=time_playing - duration)
             self.playtime_modifier += duration
+        await self.update_player_message()
         
-    def seek(self, time_in_song):
+    async def seek(self, time_in_song):
         self.stop()
         self.playtime_modifier = time_in_song
         self.play(self.current_song_idx, time_in_song)
+        await self.update_player_message()
     
     def stop(self):
         self.voice_client.stop()
         self.playtime_modifier = 0
     
-    def set_volume(self, volume):
+    async def set_volume(self, volume):
         self.volume = volume
-        self.seek(self.get_time_playing())
+        await self.seek(self.get_time_playing())
     
     def play(self, idx, begin=0):
         if begin == 0:
             self.start_time = time.time()
-            self.playtime_modifier = 0
-        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -filter:a "volume={self.volume}"'}  # -filter:a "atempo=20"
-        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options), after=lambda e: self.song_end())
+            self.playtime_modifier = 0  # TOD create new song_end_loop every time calling this
+        local_loop = asyncio.new_event_loop()
+        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -af "equalizer=f=20:t=h:width=95:g=10, volume={self.volume}, atempo=1"'}  # -filter:a "atempo=20"
+        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options), after=lambda e: local_loop.run_until_complete(self.on_song_end()))
 
     def get_time_playing(self):
         if self.voice_client.is_paused():
@@ -198,95 +263,70 @@ class PlayerInstance:
     def get_current_song(self):
         return self.playlist[self.current_song_idx]
     
-    def set_loop_mode(self, mode):  # playlist, song, off
+    async def set_loop_mode(self, mode):  # playlist, song, off
         self.loop_mode = mode
-        print(self.loop_mode)
-
-    def song_end(self):
+        await self.update_player_message()
+    
+    async def on_song_end(self):
         if self.loop_mode == 'playlist':
-            print(len(self.playlist), self.current_song_idx + 1)
             if self.current_song_idx + 1 >= len(self.playlist):
                 self.current_song_idx = 0
                 self.stop()
                 self.play(self.current_song_idx)
             else:
-                self.next()
+                await self.next()
         elif self.loop_mode == 'song':
             self.play(self.current_song_idx)
         elif self.loop_mode == 'off':
-            self.next()
+            await self.next()
         
-    async def gen_embed(self):
-        current_song = self.playlist[self.current_song_idx]
+    def gen_embed(self):
+        current_song = self.get_current_song()
         language = get_lang(self.voice_client.guild.id)
         embed = discord.Embed(title="PLAYER", colour=discord.Colour.blue())
-    
-        if not self.is_playing:
+        
+        if len(self.playlist) == 0:
             embed.add_field(name=tl.translate('player.title', language),
                             value=tl.translate('player.nothing_playing', language), inline=False)
         else:
-            embed.add_field(
-                name="Song",
-                value=f'[{current_song["name"]}](https://www.youtube.com/watch?v={current_song["id"]})\n'
-                      f'{generate_playtime(self.time_playing, current_song["duration"])}', inline=False)
-            embed.set_thumbnail(url=current_song['thumbnail'])
-    
+            if type(current_song) == PlaylistEntry:
+                embed.add_field(
+                    name="Song",
+                    value=f'[{current_song.video_name[0:45]}...](https://www.youtube.com/watch?v={current_song.vid})\n'
+                          f'{generate_playtime(self.get_time_playing(), current_song.duration)}', inline=False)
+                embed.set_thumbnail(url=current_song.thumbnail)
+            else:
+                embed.add_field(
+                    name="Stream",
+                    value=f'{current_song.stream_link}\n'
+                          f'{str(datetime.timedelta(seconds=int(self.get_time_playing())))}', inline=False)
+
         return embed
 
-
-# noinspection PyUnresolvedReferences
-async def send_or_update_player(send_new, message_or_channel):  # player_msg, time_playing, guild_id, send_new=False
-    embed = 0
-    if send_new:
-        return await message_or_channel.send(
-            components=[[Button(style=ButtonStyle.grey, label='<<', custom_id='back'),
-                         Button(style=ButtonStyle.grey, label='||', custom_id='startstop'),
-                         Button(style=ButtonStyle.grey, label='>>', custom_id='skip')]],
-            embed=embed)
-    else:
-        return await message_or_channel.edit(
-            components=[[Button(style=ButtonStyle.grey, label='<<', custom_id='back'),
-                         Button(style=ButtonStyle.grey, label='||', custom_id='startstop'),
-                         Button(style=ButtonStyle.grey, label='>>', custom_id='skip')]],
-            embed=embed)
-
-
-def generate_player_embed(guild_id, current_song, is_playing, time_playing):  # playing, language, time_playing=0, duration=0, current_song=None
-    language = get_lang(guild_id)
-    embed = discord.Embed(title="PLAYER", colour=discord.Colour.blue())
-
-    if not is_playing:
-        embed.add_field(name=tl.translate('player.title', language),
-                        value=tl.translate('player.nothing_playing', language), inline=False)
-    else:
-        embed.add_field(
-            name="Song",
-            value=f'[{current_song["name"]}](https://www.youtube.com/watch?v={current_song["id"]})\n'
-                  f'{generate_playtime(time_playing, current_song["duration"])}', inline=False)
-        embed.set_thumbnail(url=current_song['thumbnail'])
-
-    return embed
+    async def update_player_message(self):
+        if self.player_msg:
+            embed = self.gen_embed()
+            await self.player_msg.edit(embed=embed)
 
 
 @bot.event
 async def on_component(ctx):
-    print('a button has been pressed')
-#   await update_player()
+    if not is_in_same_talk_as_vc_client(ctx.guild_id, ctx.author.voice):
+        return
     await ctx.edit_origin()
+    player_inst = playerInstances[ctx.guild_id]
+    
     if ctx.custom_id == 'back':
-        await back()
-#       await update_player(ctx)
+        await player_inst.back()
 
     elif ctx.custom_id == 'startstop':
-        if bot.voice_clients[0].is_playing():
-            await pause()
+        if player_inst.voice_client.is_paused():
+            player_inst.resume()
         else:
-            await resume()
-#       await update_player(ctx)
+            await player_inst.pause()
 
     elif ctx.custom_id == 'skip':
-        await next()
-#       await update_player(ctx)
+        await player_inst.next()
 
 
 @bot.command('play', aliases=['p', 'paly', 'pasl'])
@@ -299,9 +339,17 @@ async def play(ctx, *, song=None):
     if song:
         if random.random() > 0.98:
             search_result = await find_song('rick astley never gonna give you up')
+            await ctx.send(f'Added `{song}` to the playlist')
         else:
             search_result = await find_song(song)
-        await ctx.send(f'Added `{song}` to the playlist')
+            if search_result:
+                if type(search_result) == PlaylistEntry:
+                    await ctx.send(f'Added `{search_result.video_name}` to the playlist')
+                else:
+                    await ctx.send(f'Streaming {search_result.stream_link}')
+            else:
+                await ctx.send('Nothing was found matching your search :(')
+                return
     else:
         await ctx.send(tl.translate('command.player.no_song_specified', language))
         return
@@ -310,25 +358,23 @@ async def play(ctx, *, song=None):
         player_inst = playerInstances[ctx.guild.id]
         player_inst.playlist.append(search_result)
         if not player_inst.voice_client.is_playing():
-            player_inst.next()
-            print('something')
+            await player_inst.next()
     else:
         new_player = PlayerInstance()
         playerInstances[ctx.guild.id] = new_player
         await new_player.join_vc(ctx.author.voice.channel)
         new_player.playlist.append(search_result)
         new_player.play(0)
-        print('else')
         
 
-@bot.command("leave", aliases=['stop', 'leav', 'laeve'])
+@bot.command("leave", aliases=['stop', 'leav', 'laeve', 'disconnect'])
 async def leave(ctx):
     global playerInstances
     language = get_lang(ctx.guild.id)
     
     if ctx.guild.id in playerInstances.keys():
         await playerInstances[ctx.guild.id].leave_vc()
-        playerInstances.pop(ctx.guild.id)
+        playerInstances.pop(ctx.guild.id)  # TODO investigate key-error
     else:
         await ctx.send(tl.translate('command.leave.not_connected', language))
 
@@ -336,7 +382,7 @@ async def leave(ctx):
 @bot.command('next', aliases=['skip'])
 async def next(ctx):
     if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
-        playerInstances[ctx.guild.id].next()
+        await playerInstances[ctx.guild.id].next()
 
 
 @bot.command('back', aliases=['prev', 'previous'])
@@ -361,6 +407,7 @@ async def resume(ctx):
 async def clear(ctx):
     if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
         playerInstances[ctx.guild.id].playlist = []
+        await ctx.send('Playlist is now empty')
 
 
 @bot.command('seek', aliases=[])
@@ -386,7 +433,7 @@ async def seek(ctx, position):
         elif colon_count == 0:
             await ctx.send(tl.translate('command.seek.seeking', language, output))
 
-        playerInstances[ctx.guild.id].seek(position)
+        await playerInstances[ctx.guild.id].seek(position)
 
 
 @bot.command('fastforward', aliases=['ff'])
@@ -413,14 +460,14 @@ async def fb(ctx, duration='10'):
         await playerInstances[ctx.guild.id].fastbackward(int(output))
 
 
-@bot.command('volume')
+@bot.command('volume', aliases=['voume', 'vol', 'v'])
 async def vol(ctx, volume=None):
     if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice) and volume:
         # language = get_lang('data/languages.json', ctx.guild.id)
         try:
-            playerInstances[ctx.guild.id].set_volume(volume=int(volume))
+            await playerInstances[ctx.guild.id].set_volume(volume=int(volume))
         except Exception as e:
-            print(e)
+            handle_exception_without_doing_anything_because_of_the_annoying_broad_exception_error(e)
 
 
 @bot.command('loop', aliases=[])  # 'off', 'song', 'playlist', 'pl'
@@ -437,13 +484,16 @@ async def loop(ctx, mode=None):
         return
     
     if mode in ['off']:
-        player_inst.set_loop_mode('off')
+        await player_inst.set_loop_mode('off')
+        await ctx.send(tl.translate('command.loop.mode_off', language))
     elif mode in ['song', 's']:
-        player_inst.set_loop_mode('song')
+        await player_inst.set_loop_mode('song')
+        await ctx.send(tl.translate('command.loop.mode_song', language))
     elif mode in ['playlist', 'pl']:
-        player_inst.set_loop_mode('playlist')
+        await player_inst.set_loop_mode('playlist')
+        await ctx.send(tl.translate('command.loop.mode_playlist', language))
     else:
-        await ctx.send(tl.translate('command.loop.mode_wrong', language))
+        await ctx.send(tl.translate('command.loop.wrong_mode', language))
     
 
 @bot.command('shuffle', aliases=[])
@@ -509,12 +559,13 @@ async def shuffle(ctx):
 
 # noinspection PyBroadException
 @bot.command("purge", aliases=[])
+@commands.has_any_role('Organisation')
 async def purge(ctx, action=None):
     language = get_lang(ctx.guild.id)
-    if not check_authorization(ctx):
-        await ctx.send(tl.translate('command.purge.no_perm', language), delete_after=10)
-        await ctx.message.delete()
-        return
+    # if not check_authorization(ctx):
+    #     await ctx.send(tl.translate('command.purge.no_perm', language), delete_after=10)
+    #     await ctx.message.delete()
+    #     return
 
     if not action and not ctx.message.reference:
         embed = discord.Embed(title=tl.translate('command.purge.help.title', language), colour=discord.Colour.blue())
@@ -660,31 +711,148 @@ async def deepfry(ctx, amount=6, iterations=1, noise_intensity=0.05):
 
     except Exception as e:
         await ctx.send(e)
+    os.remove('file.png')
 
 
-@bot.listen('on_message (deactivated)')
+@bot.command('yt')
+async def search(ctx, argument=None):
+    if argument:
+        result = await find_song(argument)
+        if result:
+            await ctx.channel.send(f'https://www.youtube.com/watch?v={result.vid}')
+            await ctx.message.delete()
+        else:
+            await ctx.channel.send('Nothing was found matching your search :(')
+
+
+@bot.listen('on_message')
 async def on_msg(msg):
     language = get_lang(msg.guild.id)
-    if ('pipe-bot' in msg.content or 'pipebot' in msg.content or '<@!864198668533497877>' in msg.content or '<@&864224161290125323>' in msg.content) and 'offline' in msg.content:
+    if ('pipe-bot' in msg.content or 'pipebot' in msg.content or '<@!864198668533497877>' in msg.content or '<@&864224161290125323>' in msg.content) and 'offline' in msg.content and online:
         await msg.channel.send(tl.translate('only_ghosting', language))
         await msg.channel.send('https://cdn.discordapp.com/emojis/855160244023459850.gif?v=1')
+    
+    if 'kurbel' in msg.content.lower() or 'krank' in msg.content.lower():
+        emoji = bot.get_emoji(845738466247049236)
+        await msg.add_reaction(emoji)
 
 
 @bot.event
 async def on_ready():
     print('(re)connected')
 
+#
+# @bot.event
+# async def on_voice_state_update(member, before, after):  # bot was disconnected, everyone in the bots channel has disconnected
+#     if member == bot.user and not after.channel and member.guild.id in playerInstances.keys():
+#         await playerInstances[member.guild.id].leave_vc()
+#
+#     if before.channel and not after.channel:
+#         pi_chanels = [playerInstances[pi].voice_client.channel for pi in playerInstances.keys()]
+#         if before.channel in pi_chanels and len(before.channel.voice_states) > 1:
+#             await playerInstances[member.guild.id].leave_vc()
+         
 
-@bot.event
-async def on_voice_state_update(member, before, after):  # bot was disconnected, everyone in the bots channel has disconnected
-    if member == bot.user and not after.channel and member.guild.id in playerInstances.keys():
-        await playerInstances[member.guild.id].leave_vc()
-    
-    if before.channel and not after.channel:
-        pi_chanels = [playerInstances[pi].voice_client.channel for pi in playerInstances.keys()]
-        if before.channel in pi_chanels:
-            await playerInstances[member.guild.id].leave_vc()
-    
+@slash.slash(name='back', description='Moves back in queue', guild_ids=guild_ids)
+async def _back(ctx):
+    await back(ctx)
+
+
+@slash.slash(name='clear', description='Empties the current palylist', guild_ids=guild_ids)
+async def _clear(ctx):
+    await clear(ctx)
+
+
+# DEEPFRY
+
+
+@slash.slash(name='fastbackward', description='', guild_ids=guild_ids)
+async def _fastbackward(ctx, amount):
+    await fb(ctx, amount)
+
+
+@slash.slash(name='fastforward', description='Skips the given amount of time', guild_ids=guild_ids)
+async def _fastforward(ctx, amount):
+    await fb(ctx, amount)
+
+
+# HELP
+
+@slash.slash(name='leave', description='Disconnects from your voice chnnel', guild_ids=guild_ids)
+async def _leave(ctx):
+    await leave(ctx)
+
+
+@slash.slash(name='loop', description='Sets the loop mode for the player', guild_ids=guild_ids)  # TODO Add option thingy
+async def _loop(ctx, mode=None):
+    await loop(ctx, mode)
+
+
+@slash.slash(name='skip', description='Skips the current song', guild_ids=guild_ids)
+async def _next(ctx):
+    await next(ctx)
+
+
+@slash.slash(name='pause', description='Pauses the player (You might want to use `/player` instead)', guild_ids=guild_ids)
+async def _pause(ctx):
+    await pause(ctx)
+
+
+@slash.slash(name='play', description='Adds the given song to the playlist', guild_ids=guild_ids)
+async def _play(ctx, song):
+    await ctx.defer()
+    await play(ctx=ctx, song=song)
+
+
+@slash.slash(name='player', description='Sends an embed to control the player', guild_ids=guild_ids)
+async def _player_command(ctx):
+    await player_command(ctx)
+
+
+@slash.slash(name='purge', description='Deletes messages, for help, send `/purge`')
+async def _purge(ctx):
+    await purge(ctx, action=None)
+
+
+@slash.slash(name='resume', description='Unpauses the player', guild_ids=guild_ids)
+async def _resme(ctx):
+    await resume(ctx)
+
+
+@slash.slash(name='yt-search', description='Searches the given video name on youtube', guild_ids=guild_ids)
+async def _ytsearch(ctx, videoname):
+    await ctx.defer()
+    result = await find_song(videoname)
+    if result:
+        await ctx.send(f'https://www.youtube.com/watch?v={result.vid}')
+    else:
+        await ctx.send('Nothing was found matching your search :(')
+
+
+@slash.slash(name='seek', description='Jumps to the given timestamp in the song (`HH:MM:SS`, `MM:SS`, `seconds` supported)')
+async def _seek(ctx, position):
+    await seek(ctx, position)
+
+
+@slash.slash(name='mc-server', description='Shows info about the given minecraft server', guild_ids=guild_ids)
+async def _server(ctx, ip):
+    await server(ctx, ip)
+
+
+@slash.slash(name='set-language', description='Sets the bot\'s language of this server', guild_ids=guild_ids)
+async def _set_language(ctx, language=None):
+    await set_language(ctx, language)
+
+
+@slash.slash(name='shuffle', description='Randomizes the bot\'s playlist', guild_ids=guild_ids)
+async def _shuffle(ctx):
+    await shuffle(ctx)
+
+
+@slash.slash(name='volume', description='Sets the player\'s volume', guild_ids=guild_ids)
+async def _vol(ctx, volume=None):
+    await vol(ctx, volume)
+
 
 print('Startup done. Connecting to discord...')
 bot.run(open('data/token.txt').readline())
