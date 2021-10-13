@@ -19,6 +19,7 @@ import translate as tl
 import deepfrier as dp
 from playlistEntry import PlaylistEntry
 from playlistEntry import DirectStream
+import  autoplay_engine
 print('Libraries loaded...')
 
 activity = discord.Activity(type=discord.ActivityType.listening, name="POWERWOLF")
@@ -76,7 +77,10 @@ def search_yt(song):
             thumbnail = info['thumbnail']
             duration = info['duration']
             vid = info['id']
-            return PlaylistEntry(url, name, thumbnail, duration, vid)
+            channel_id = info['channel_id']
+            tags = info['tags']
+            print(channel_id, tags)
+            return PlaylistEntry(url, name, thumbnail, duration, vid, channel_id, tags)
     
 
 async def find_song(song):
@@ -162,6 +166,7 @@ class PlayerInstance:
         self.volume = 1
         self.loop_mode = 'off'
         self.equalizer = [0, 0, 0, 0, 0]
+        self.autoplay = False
 
     async def join_vc(self, vc):
         try:
@@ -250,6 +255,8 @@ class PlayerInstance:
             self.playtime_modifier = 0  # TOD create new song_end_loop every time calling this
         local_loop = asyncio.new_event_loop()
         ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -af "equalizer=f=20:t=h:width=95:g=10, volume={self.volume}, atempo=1"'}  # -filter:a "atempo=20"
+        if self.voice_client.is_playing():
+            self.stop()
         self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options), after=lambda e: local_loop.run_until_complete(self.on_song_end()))
 
     def get_time_playing(self):
@@ -279,7 +286,10 @@ class PlayerInstance:
             self.play(self.current_song_idx)
         elif self.loop_mode == 'off':
             await self.next()
-        
+            if self.autoplay:
+                self.playlist.append(autoplay_engine.find_matching_song(50, self.get_current_song().channel_id))
+                self.next()
+                
     def gen_embed(self):
         current_song = self.get_current_song()
         language = get_lang(self.voice_client.guild.id)
@@ -502,6 +512,19 @@ async def shuffle(ctx):
         playlist = playerInstances[ctx.guild.id].playlist
         random.shuffle(playlist)
         playerInstances[ctx.guild.id].playlist = playlist
+
+
+@bot.command('autoplay', aliases=['ap'])
+async def autoplay_cmd(ctx):
+    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
+        pi = playerInstances.get(ctx.guild.id)
+        pi: PlayerInstance
+        if pi.autoplay:
+            pi.autoplay = False
+        else:
+            pi.autoplay = True
+            if not pi.is_playing and pi.get_current_song() is PlaylistEntry:
+                pi.playlist.append(autoplay_engine.find_matching_song(50, pi.get_current_song().channel_id))
 
 
 # @bot.command('playlist')
