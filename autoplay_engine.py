@@ -2,6 +2,7 @@ import json
 import urllib.request
 import random
 import youtube_dl
+from playlistEntry import PlaylistEntry
 
 # count = 50
 API_KEY = 'AIzaSyAHplK7tFwChb13FJbFZ7ak_jLnnxTPiYc'
@@ -19,9 +20,14 @@ def find_matching_song(count, cid):
         video_id = (data['id']['videoId'])
         with youtube_dl.YoutubeDL() as ydl:
             entries = ydl.extract_info(str(f'ytsearch:https://youtu.be/{video_id}'), download=False)['entries']
-            if 150 < entries[0]['duration'] < 240:
+            if 150 < entries[0]['duration'] < 300:
                 found = True
-                return f'https://youtu.be/{video_id}'
-
-
-print(find_matching_song(50, 'UCG7AaCh_CiG6pq_rRDNw72A'))
+                info = entries[0]
+                url = info['formats'][0]['url']
+                name = info['title']
+                thumbnail = info['thumbnail']
+                duration = info['duration']
+                vid = info['id']
+                channel_id = info['channel_id']
+                tags = info['tags']
+                return PlaylistEntry(url, name, thumbnail, duration, vid, channel_id, tags)
