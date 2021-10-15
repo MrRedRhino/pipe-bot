@@ -16,7 +16,7 @@ def find_matching_song(count, cid):
     results = json.loads(data.decode(web_url.info().get_content_charset('utf-8')))
     found = False
     while not found:
-        data = results['items'][random.randint(0, count)]
+        data = results['items'][random.randint(0, len(results['items']))]
         video_id = (data['id']['videoId'])
         with youtube_dl.YoutubeDL() as ydl:
             entries = ydl.extract_info(str(f'ytsearch:https://youtu.be/{video_id}'), download=False)['entries']
