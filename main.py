@@ -864,7 +864,7 @@ async def _clear(ctx):
     await clear(ctx)
 
 
-# DEEPFRYa
+# DEEPFRY
 
 
 @slash.slash(name='fastbackward', description='', guild_ids=guild_ids)
