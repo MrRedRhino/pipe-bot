@@ -20,14 +20,15 @@ def find_matching_song(count, cid):
         video_id = (data['id']['videoId'])
         with youtube_dl.YoutubeDL() as ydl:
             entries = ydl.extract_info(str(f'ytsearch:https://youtu.be/{video_id}'), download=False)['entries']
-            if 150 < entries[0]['duration'] < 300:
-                found = True
-                info = entries[0]
-                url = info['formats'][0]['url']
-                name = info['title']
-                thumbnail = info['thumbnail']
-                duration = info['duration']
-                vid = info['id']
-                channel_id = info['channel_id']
-                tags = info['tags']
-                return PlaylistEntry(url, name, thumbnail, duration, vid, channel_id, tags)
+            if len(entries) > 0:
+                if 150 < entries[0]['duration'] < 300:
+                    found = True
+                    info = entries[0]
+                    url = info['formats'][0]['url']
+                    name = info['title']
+                    thumbnail = info['thumbnail']
+                    duration = info['duration']
+                    vid = info['id']
+                    channel_id = info['channel_id']
+                    tags = info['tags']
+                    return PlaylistEntry(url, name, thumbnail, duration, vid, channel_id, tags)
