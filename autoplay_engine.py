@@ -32,4 +32,3 @@ def find_matching_song(count, cid):
                     channel_id = info['channel_id']
                     tags = info['tags']
                     return PlaylistEntry(url, name, thumbnail, duration, vid, channel_id, tags)
-    
