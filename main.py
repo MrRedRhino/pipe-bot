@@ -107,13 +107,13 @@ def is_in_same_talk_as_vc_client(guild_id, author_vc):
     global playerInstances
     pi = playerInstances.get(guild_id)
     if not pi or not author_vc.channel:
-        return False
+        return False, ''
     if pi.voice_client.channel == author_vc.channel:
         return pi, get_lang(guild_id)
 
 
 def search_yt(song):
-    with youtube_dl.YoutubeDL() as ydl:
+    with youtube_dl.YoutubeDL({'quiet': True}) as ydl:
         entries = ydl.extract_info(str(f'ytsearch:{str(song)}'), download=False)['entries']
         if len(entries) == 0:
             return None
@@ -161,13 +161,13 @@ def generate_playtime(current_time, duration):
 
 @bot.command('player')
 async def player_command(ctx):
-    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
-        player_inst = playerInstances[ctx.guild.id]
-        embed = player_inst.gen_embed()
-        if player_inst.player_msg:
-            await player_inst.player_msg.delete()
+    pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
+    if pi:
+        embed = pi.gen_embed()
+        if pi.player_msg:
+            await pi.player_msg.delete()
 
-        player_inst.player_msg = await ctx.send(
+        pi.player_msg = await ctx.send(
             components=[[Button(style=ButtonStyle.grey, label='<<', custom_id='back'),
                          Button(style=ButtonStyle.grey, label='||', custom_id='startstop'),
                          Button(style=ButtonStyle.grey, label='>>', custom_id='skip')]],
@@ -298,6 +298,7 @@ class PlayerInstance:
         await self.update_player_message()
     
     async def on_song_end(self):
+        print('song end reached')
         if self.loop_mode == 'playlist':
             if self.current_song_idx + 1 >= len(self.playlist):
                 self.current_song_idx = 0
@@ -363,6 +364,7 @@ async def on_component(ctx):
 
 @bot.command('play', aliases=['p', 'paly', 'pasl'])
 async def play(ctx, *, song=None):
+    global playerInstances
     language = get_lang(ctx.guild.id)
     if not ctx.author.voice:
         await ctx.send(tl.translate('command.play.user_not_connected', language))
@@ -376,7 +378,7 @@ async def play(ctx, *, song=None):
             search_result = await find_song(song)
             if search_result:
                 if type(search_result) == PlaylistEntry:
-                    await ctx.send(tl.translate('command.play.added_song', language, song))
+                    await ctx.send(tl.translate('command.play.added_song', language, search_result.video_name))
                 else:
                     await ctx.send(tl.translate('command.play.streaming', language, song))
             else:
@@ -385,8 +387,9 @@ async def play(ctx, *, song=None):
     else:
         await ctx.send(tl.translate('command.play.no_song_specified', language))
         return
-        
-    if is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice):
+
+    pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
+    if pi:
         player_inst = playerInstances[ctx.guild.id]
         player_inst.playlist.append(search_result)
         if not player_inst.voice_client.is_playing():
@@ -440,7 +443,7 @@ async def pause(ctx):
 async def resume(ctx):
     pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
     if pi:
-        await pi.resume()
+        pi.resume()
 
 
 @bot.command('clear', aliases=[])
@@ -545,6 +548,16 @@ async def shuffle(ctx):
         random.shuffle(playlist)
         pi.playlist = playlist
         ctx.send(tl.translate('command.shuffle.done', language))
+
+
+@bot.command('queue', aliases=['playlist', 'pl'])
+async def queue(ctx):
+    pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
+    embed = discord.Embed(title=tl.translate('command.queue.title', language))
+    if pi:
+        for index, entry in enumerate(pi.playlist):
+            entry: PlaylistEntry
+            embed.add_field(name=str(index), value=f'{entry.video_name} - {datetime.timedelta(seconds=entry.duration)}')
 
 
 @bot.command('autoplay', aliases=['ap'])
@@ -669,9 +682,10 @@ async def help_command(ctx):
 
 @bot.command("setlanguage")
 async def set_language(ctx, language=None):
+    global language_file
     await ctx.message.delete()
-    if not language or language not in ['en', 'de', 'fr']:
-        await ctx.send(f'Available languages are: `"en","de","fr"`\nThe current one is `{get_lang(ctx.guild.id)}`')
+    if not language or language not in ['en', 'ru']:
+        await ctx.send(f'Available languages are: `"en","ru"`\nThe current one is `{get_lang(ctx.guild.id)}`')
         return
     
     if get_lang(ctx.guild.id) == language:
@@ -682,16 +696,13 @@ async def set_language(ctx, language=None):
     if language == 'en':
         languages = json.load(open('data/languages.json', 'r'))
         languages[str(ctx.guild.id)] = 'en'
+        language_file[str(ctx.guild.id)] = 'en'
         json.dump(languages, open('data/languages.json', 'w'))
         
-    elif language == 'de':
+    elif language == 'ru':
         languages = json.load(open('data/languages.json', 'r'))
-        languages[str(ctx.guild.id)] = 'de'
-        json.dump(languages, open('data/languages.json', 'w'))
-
-    elif language == 'fr':
-        languages = json.load(open('data/languages.json', 'r'))
-        languages[str(ctx.guild.id)] = 'fr'
+        languages[str(ctx.guild.id)] = 'ru'
+        language_file[str(ctx.guild.id)] = 'ru'
         json.dump(languages, open('data/languages.json', 'w'))
         
 
@@ -747,7 +758,7 @@ async def deepfry(ctx, amount=6, iterations=1, noise_intensity=0.05):
 
         img = Image.open('file.png')
         enhancer = ImageEnhance.Color(img)
-        start = time.time()
+        start_time = time.time()
         for i in range(iterations):
             img = enhancer.enhance(amount)
 
@@ -757,7 +768,7 @@ async def deepfry(ctx, amount=6, iterations=1, noise_intensity=0.05):
                 except:
                     pass
 
-            if time.time() - start > 45:
+            if time.time() - start_time > 45:
                 await ctx.send(tl.translate('command.deepfry.too_long', language, i), delete_after=10)
                 break
 
@@ -790,7 +801,7 @@ async def on_msg(msg: discord.Message):
     global omg_counter_last_increase, omg_counter_last_member_id, omg_counter_last_spam
     language = get_lang(msg.guild.id)
     msg_content = f' {msg.content} '
-    omg_occurrences = msg_content.lower().count('omg ') + msg_content.lower().count(' omtsch ')
+    omg_occurrences = msg_content.lower().count(' omg ') + msg_content.lower().count(' omtsch ')
     if ('pipe-bot' in msg.content or 'pipebot' in msg.content or '<@!864198668533497877>' in msg.content or '<@&864224161290125323>' in msg.content) and 'offline' in msg.content and online:
         await msg.channel.send(tl.translate('only_ghosting', language))
         await msg.channel.send('https://cdn.discordapp.com/emojis/855160244023459850.gif?v=1')
