@@ -197,7 +197,7 @@ class PlayerInstance:
                 self.voice_client = await vc.connect()
         except Exception as e:
             handle_exception_without_doing_anything_because_of_the_annoying_broad_exception_error(e)
-    
+
     async def leave_vc(self):
         try:
             await self.voice_client.disconnect()
@@ -338,8 +338,7 @@ class PlayerInstance:
 
     async def update_player_message(self):
         if self.player_msg:
-            embed = self.gen_embed()
-            await self.player_msg.edit(embed=embed)
+            await self.player_msg.edit(embed=self.gen_embed())
 
 
 @bot.event
