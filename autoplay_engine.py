@@ -18,7 +18,7 @@ def find_matching_song(count, cid):
     while not found:
         data = results['items'][random.randint(0, len(results['items']) - 1)]
         video_id = (data['id']['videoId'])
-        with youtube_dl.YoutubeDL() as ydl:
+        with youtube_dl.YoutubeDL({'quiet': True}) as ydl:
             entries = ydl.extract_info(str(f'ytsearch:https://youtu.be/{video_id}'), download=False)['entries']
             if len(entries) > 0:
                 if 150 < entries[0]['duration'] < 300:
