@@ -107,7 +107,7 @@ def is_in_same_talk_as_vc_client(guild_id, author_vc):
     global playerInstances
     pi = playerInstances.get(guild_id)
     if not pi or not author_vc.channel:
-        return False, ''
+        return False, get_lang(guild_id)
     if pi.voice_client.channel == author_vc.channel:
         return pi, get_lang(guild_id)
 
@@ -148,10 +148,10 @@ async def find_song(song):
 def generate_playtime(current_time, duration):
     output = f'{str(datetime.timedelta(seconds=int(current_time)))} '
 
-    for i in range(int(current_time / duration * 10)):
+    for _ in range(int(current_time / duration * 10)):
         output += '┈'
     output += '◉'
-    for i in range(10 - int(current_time / duration * 10)):
+    for _ in range(10 - int(current_time / duration * 10)):
         output += '┈'
     output += f' {str(datetime.timedelta(seconds=duration))}'
     return output
@@ -221,7 +221,6 @@ class PlayerInstance:
     async def next(self):
         if self.current_song_idx < len(self.playlist) - 1:
             self.current_song_idx += 1
-            self.stop()
             self.play(self.current_song_idx)
         await self.update_player_message()
     
@@ -280,7 +279,7 @@ class PlayerInstance:
         ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -af "volume={self.volume}, atempo=1"'}  # -vn -ss {begin} -af "equalizer=f=20:t=h:width=95:g=10, volume={self.volume}, atempo=1"
         if self.voice_client.is_playing():
             self.stop()
-        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options), after=lambda e: local_loop.run_until_complete(self.on_song_end()))
+        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options), after=lambda e: local_loop.run_coroutine_threadsafe(self.on_song_end()))  # asyncio.run_coroutine_threadsafe
 
     def get_time_playing(self):
         if self.voice_client.is_paused():
@@ -307,6 +306,7 @@ class PlayerInstance:
             else:
                 await self.next()
         elif self.loop_mode == 'song':
+            self.stop()
             self.play(self.current_song_idx)
         elif self.loop_mode == 'off':
             if self.autoplay:
@@ -403,12 +403,9 @@ async def play(ctx, *, song=None):
 
 @bot.command("leave", aliases=['stop', 'leav', 'laeve', 'disconnect'])
 async def leave(ctx):
-    global playerInstances
-    language = get_lang(ctx.guild.id)
-    
-    if ctx.guild.id in playerInstances.keys():
-        await playerInstances[ctx.guild.id].leave_vc()
-        playerInstances.pop(ctx.guild.id)  # TODO investigate key-error
+    pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
+    if pi:
+        await pi.leave_vc()
     else:
         await ctx.send(tl.translate('command.leave.not_connected', language))
 
@@ -554,9 +551,10 @@ async def queue(ctx):
     pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
     embed = discord.Embed(title=tl.translate('command.queue.title', language))
     if pi:
-        for index, entry in enumerate(pi.playlist):
+        for idx, entry in enumerate(pi.playlist):
             entry: PlaylistEntry
-            embed.add_field(name=str(index), value=f'{entry.video_name} - {datetime.timedelta(seconds=entry.duration)}')
+            embed.add_field(name=f'{entry.video_name}', value=f'{datetime.timedelta(seconds=entry.duration)}', inline=False)
+        await ctx.send(embed=embed)
 
 
 @bot.command('autoplay', aliases=['ap'])
@@ -683,27 +681,33 @@ async def help_command(ctx):
 async def set_language(ctx, language=None):
     global language_file
     await ctx.message.delete()
-    if not language or language not in ['en', 'ru']:
-        await ctx.send(f'Available languages are: `"en","ru"`\nThe current one is `{get_lang(ctx.guild.id)}`')
+    if not language or language not in ['en', 'ru', 'de']:
+        await ctx.send(f'Available languages are:\n`ru` (By Ushankaboi420#7644)\n`de` (Very german indeed; by MrGreenLlama007#0219)\n`en`\n\nThe current language is `{get_lang(ctx.guild.id)}`')
         return
     
     if get_lang(ctx.guild.id) == language:
         await ctx.send(f'Nothing changed - language was `{language}` before')
     else:
         await ctx.send(f'Language has been set to `{language}`')
-    
+
     if language == 'en':
         languages = json.load(open('data/languages.json', 'r'))
         languages[str(ctx.guild.id)] = 'en'
         language_file[str(ctx.guild.id)] = 'en'
         json.dump(languages, open('data/languages.json', 'w'))
-        
+
     elif language == 'ru':
         languages = json.load(open('data/languages.json', 'r'))
         languages[str(ctx.guild.id)] = 'ru'
         language_file[str(ctx.guild.id)] = 'ru'
         json.dump(languages, open('data/languages.json', 'w'))
-        
+
+    elif language == 'de':
+        languages = json.load(open('data/languages.json', 'r'))
+        languages[str(ctx.guild.id)] = 'de'
+        language_file[str(ctx.guild.id)] = 'de'
+        json.dump(languages, open('data/languages.json', 'w'))
+
 
 @bot.command('server', aliases=['serverinfo', 'mcinfo'])
 async def server(ctx, ip):
