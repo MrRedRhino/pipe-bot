@@ -37,6 +37,7 @@
   "command.purge.no_msg_with_id": "No message with the given id within 100 messages found",
   "command.purge.no_perm": "You dont have permission to use this command",
   "command.purge.reply_too_old": "The message you replied to was not found within the last 100 messages",
+  "command.queue.title": "Queue:",
   "command.seek.seeking": "Seeking to {}",
   "command.seek.wrong_format": "Too many colons, only `HH:MM:SS` or `MM:SS` allowed",
   "command.server.could_not_connect": "Could not connect to the given server!",
