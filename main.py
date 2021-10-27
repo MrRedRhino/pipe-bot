@@ -1,4 +1,7 @@
 from __future__ import unicode_literals
+
+import os
+
 print('Loading libraries')
 import time
 print('Imported time')
@@ -62,6 +65,7 @@ print(f'Imported Direct Stream - Took {time.time() - start}s')
 start = time.time()
 import autoplay_engine
 print('Libraries loaded...')
+import eq_renderer
 
 activity = discord.Activity(type=discord.ActivityType.listening, name="POWERWOLF")
 bot = commands.Bot(command_prefix='b-', status=discord.Status.online, activity=activity, help_command=None, intents=discord.Intents.all())
@@ -73,7 +77,6 @@ tl.read_files()
 guild_ids = [702452892241625099]  # , 821495407619997746
 
 playerInstances = {}
-playerUpdater = None
 language_file = json.load(open('data/languages.json'))
 song_end_loop = asyncio.new_event_loop()
 member_update_last_member_id = 0
@@ -186,9 +189,8 @@ class PlayerInstance:
         self.playtime_modifier = 0
         self.pause_start = 0
         self.is_playing = False
-        self.volume = 1
         self.loop_mode = 'off'
-        self.equalizer = [0, 0, 0, 0, 0]
+        self.equalizer = [1, 0, 0, 0, 0, 0]
         self.autoplay = False
 
     async def join_vc(self, vc):
@@ -267,19 +269,18 @@ class PlayerInstance:
         self.voice_client.stop()
         self.playtime_modifier = 0
     
-    async def set_volume(self, volume):
-        self.volume = volume
+    async def change_equalizer(self, volume):
+        self.equalizer[0] = volume
         await self.seek(self.get_time_playing())
     
     def play(self, idx, begin=0):
         if begin == 0:
             self.start_time = time.time()
-            self.playtime_modifier = 0  # TOD create new song_end_loop every time calling this
-        local_loop = asyncio.new_event_loop()
-        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -af "volume={self.volume}, atempo=1"'}  # -vn -ss {begin} -af "equalizer=f=20:t=h:width=95:g=10, volume={self.volume}, atempo=1"
+            self.playtime_modifier = 0  # TOD create new song_end_loop every time calling this  # volume={self.volume}  # volume={self.equalizer[0]}
+        ffmpeg_options = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': f'-vn -ss {begin} -af "equalizer=f=20:t=h:width=95:g=10, volume={self.equalizer[0]}, atempo=1"'}  # -vn -ss {begin} -af "equalizer=f=20:t=h:width=95:g=10, volume={self.volume}, atempo=1"
         if self.voice_client.is_playing():
             self.stop()
-        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options), after=lambda e: local_loop.run_coroutine_threadsafe(self.on_song_end()))  # asyncio.run_coroutine_threadsafe
+        self.voice_client.play(discord.FFmpegPCMAudio(self.playlist[int(idx)].stream_link, **ffmpeg_options), after=lambda e: song_end_loop.run_until_complete(self.on_song_end()))  # asyncio.run_coroutine_threadsafe
 
     def get_time_playing(self):
         if self.voice_client.is_paused():
@@ -398,6 +399,7 @@ async def play(ctx, *, song=None):
         playerInstances[ctx.guild.id] = new_player
         await new_player.join_vc(ctx.author.voice.channel)
         new_player.playlist.append(search_result)
+        print('Play!!!!')
         new_player.play(0)
         
 
@@ -505,7 +507,7 @@ async def vol(ctx, volume=None):
     pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
     if pi and volume:
         try:
-            await playerInstances[ctx.guild.id].set_volume(volume=int(volume))
+            await pi.change_equalizer(volume=int(volume))
         except Exception as e:
             handle_exception_without_doing_anything_because_of_the_annoying_broad_exception_error(e)
 
@@ -513,9 +515,7 @@ async def vol(ctx, volume=None):
 @bot.command('loop', aliases=[])  # 'off', 'song', 'playlist', 'pl'
 async def loop(ctx, mode=None):
     pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
-    if pi:
-        player_inst = playerInstances[ctx.guild.id]
-    else:
+    if not pi:
         await ctx.send(tl.translate('command.loop.not_connected', language))
         return
 
@@ -524,13 +524,13 @@ async def loop(ctx, mode=None):
         return
     
     if mode in ['off']:
-        await player_inst.set_loop_mode('off')
+        await pi.set_loop_mode('off')
         await ctx.send(tl.translate('command.loop.mode_off', language))
     elif mode in ['song', 's']:
-        await player_inst.set_loop_mode('song')
+        await pi.set_loop_mode('song')
         await ctx.send(tl.translate('command.loop.mode_song', language))
     elif mode in ['playlist', 'pl']:
-        await player_inst.set_loop_mode('playlist')
+        await pi.set_loop_mode('playlist')
         await ctx.send(tl.translate('command.loop.mode_playlist', language))
     else:
         await ctx.send(tl.translate('command.no_mode', language))
@@ -544,6 +544,20 @@ async def shuffle(ctx):
         random.shuffle(playlist)
         pi.playlist = playlist
         ctx.send(tl.translate('command.shuffle.done', language))
+
+
+@bot.command('equalizer', aliases=['eq', 'equaliser'])
+async def equalizer_cmd(ctx, preamp=None, vol1=None, vol2=None, vol3=None, vol4=None, vol5=None):
+    messig = ''
+    pi, language = is_in_same_talk_as_vc_client(ctx.guild.id, ctx.author.voice)
+    if pi and preamp and vol1 and vol2 and vol3 and vol4 and vol5:
+        for i in eq_renderer.render(pi.equalizer[0], pi.equalizer[1:6]):
+            messig += f'{i}\n'
+        pi.change_equalizer = [vol, vol1, vol2, vol3, vol4, vol5]
+        await ctx.send(messig)
+    elif pi:
+        for i in eq_renderer.render(pi.equalizer[0], pi.equalizer[1:6]):
+            messig += f'{i}\n'
 
 
 @bot.command('queue', aliases=['playlist', 'pl'])
@@ -570,6 +584,63 @@ async def autoplay_cmd(ctx):
             if not pi.is_playing and pi.get_current_song() is PlaylistEntry:
                 pi.playlist.append(autoplay_engine.find_matching_song(50, pi.get_current_song().channel_id))
 
+
+def restart():
+    os.system(f'kill {os.getpid()}\ncd ~/Downloads/python/pipebot\nscreen -S pipebot python3 main.py')
+
+
+@bot.command('sudo', aliases=[])
+async def sudo(ctx, password=None, arg1='', *, args=''):
+    available_variants = {'PlayerInstances': playerInstances, 'activity': activity, 'bot': bot,
+                          'language_file': language_file, 'omg_counter_last_increase': omg_counter_last_increase,
+                          'omg_counter_last_member_id': omg_counter_last_member_id,
+                          'omg_counter_last_spam': omg_counter_last_spam,
+                          'list': [1, 2, 4, 6]
+                          }
+
+    await ctx.message.delete()
+    language = get_lang(ctx.guild.id)
+    sudoers = []
+    for i in open('data/sudoers.json', 'r'):
+        sudoers.append(i)
+    if str(ctx.author.id) not in sudoers:
+        await ctx.send(tl.translate('command.sudo.not_a_sudoer', language))
+        return
+    if not password or password != 'Duran':
+        await ctx.send(tl.translate('command.sudo.wrong_password', language))
+        return
+    output_msg = f'{ctx.author.mention}: {arg1} {args}```\n'
+
+    if arg1 == 'restart':
+        output_msg += 'Restarting...```'
+        await ctx.send(output_msg)
+        restart()
+    
+    elif arg1 == 'ls':
+        for i in available_variants.keys():
+            print(i)
+            output_msg += f'{i}\n'
+    
+    elif arg1 == 'echo':
+        for i in args.split(' '):
+            if type(available_variants.get(i)) == list:
+                for x in i.split('.'):
+                    print(x)
+                    if x == i:
+                        output_msg += f'{available_variants.get(i)}\n\n'
+                    else:
+                        output_msg += f'{available_variants.get(i)[x[1]]}'
+    await ctx.send(f'{output_msg}```')
+    
+#
+#
+#
+#
+#
+#
+#
+#
+#
 # @bot.command('playlist')
 # async def playlist_command(ctx, arg1=None, arg2=None):
 #     language = get_lang(ctx.guild.id)
@@ -682,31 +753,27 @@ async def set_language(ctx, language=None):
     global language_file
     await ctx.message.delete()
     if not language or language not in ['en', 'ru', 'de']:
-        await ctx.send(f'Available languages are:\n`ru` (By Ushankaboi420#7644)\n`de` (Very german indeed; by MrGreenLlama007#0219)\n`en`\n\nThe current language is `{get_lang(ctx.guild.id)}`')
+        await ctx.send(f'**Available languages are:**\n`ru` (By Ushankaboi420#7644)\n`de` (Very german indeed; by MrGreenLlama007#0219)\n`en`\n**The current language is `{get_lang(ctx.guild.id)}`**')
         return
     
     if get_lang(ctx.guild.id) == language:
         await ctx.send(f'Nothing changed - language was `{language}` before')
     else:
         await ctx.send(f'Language has been set to `{language}`')
-
+    languages = json.load(open('data/languages.json', 'r'))
+    
     if language == 'en':
-        languages = json.load(open('data/languages.json', 'r'))
         languages[str(ctx.guild.id)] = 'en'
         language_file[str(ctx.guild.id)] = 'en'
-        json.dump(languages, open('data/languages.json', 'w'))
 
     elif language == 'ru':
-        languages = json.load(open('data/languages.json', 'r'))
         languages[str(ctx.guild.id)] = 'ru'
         language_file[str(ctx.guild.id)] = 'ru'
-        json.dump(languages, open('data/languages.json', 'w'))
 
     elif language == 'de':
-        languages = json.load(open('data/languages.json', 'r'))
         languages[str(ctx.guild.id)] = 'de'
         language_file[str(ctx.guild.id)] = 'de'
-        json.dump(languages, open('data/languages.json', 'w'))
+    json.dump(languages, open('data/languages.json', 'w'))
 
 
 @bot.command('server', aliases=['serverinfo', 'mcinfo'])
@@ -799,6 +866,26 @@ async def search(ctx, argument=None):
             await ctx.channel.send(tl.translate('command.play.nothing_found', get_lang(ctx.guild.id)))
 
 
+@bot.command('spam')
+async def spam(ctx, who=None, amount=10):
+    language = get_lang(ctx.guild.id)
+    if who is None:
+        await ctx.send(tl.translate('command.spam.no_user_specified', language))
+        return
+
+    if who[:3] == '<@!' and who[-1:] == '>':
+        try:
+            user = await bot.fetch_user(int(who[3:-1]))
+            channel = await bot.fetch_channel(902641801167515669)
+            await channel.send(f'SLAVES! PING {user.id} {amount} !')
+
+        except Exception as e:
+            await ctx.send(tl.translate('command.spam.user_not_existing', language))
+            handle_exception_without_doing_anything_because_of_the_annoying_broad_exception_error(e)
+    else:
+        await ctx.send(tl.translate('command.spam.user_not_existing', language))
+
+
 @bot.listen('on_message')
 async def on_msg(msg: discord.Message):
     global omg_counter_last_increase, omg_counter_last_member_id, omg_counter_last_spam
@@ -856,6 +943,17 @@ async def on_member_update(before, after):
         f.write(f'[{date} {tm}] {before.display_name}: {before.status} >>> {after.status}\n')
 
 
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if before:
+        pass
+    member: discord.Member
+    if bot.user.id == member.id and after.channel is None:
+        pi = playerInstances.get(member.guild.id)
+        if pi:
+            await pi.leave_vc()
+            
+
 #
 # @bot.event
 # async def on_voice_state_update(member, before, after):  # bot was disconnected, everyone in the bots channel has disconnected
@@ -866,7 +964,7 @@ async def on_member_update(before, after):
 #         pi_chanels = [playerInstances[pi].voice_client.channel for pi in playerInstances.keys()]
 #         if before.channel in pi_chanels and len(before.channel.voice_states) > 1:
 #             await playerInstances[member.guild.id].leave_vc()
-         
+
 
 @slash.slash(name='back', description='Moves back in queue', guild_ids=guild_ids)
 async def _back(ctx):
